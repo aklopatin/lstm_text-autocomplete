@@ -95,7 +95,8 @@ def evaluate_model_rouge(
     device: torch.device,
     context_size: int = 5,
     max_new_tokens: int | None = None,
-) -> Dict[str, float]:
+    max_examples: int = 5,
+) -> Tuple[Dict[str, float], List[Tuple[str, str, str]]]:
     """
     Оценивает модель с помощью ROUGE на списке предложений.
 
@@ -112,6 +113,7 @@ def evaluate_model_rouge(
 
     predictions: List[str] = []
     references: List[str] = []
+    examples: List[Tuple[str, str, str]] = []
 
     model.eval()
     with torch.no_grad():
@@ -159,8 +161,16 @@ def evaluate_model_rouge(
             pred_tokens = [itos[i] for i in generated_suffix]
             ref_tokens = [itos[i] for i in target_suffix]
 
-            predictions.append(" ".join(pred_tokens))
-            references.append(" ".join(ref_tokens))
+            pred_str = " ".join(pred_tokens)
+            ref_str = " ".join(ref_tokens)
+
+            predictions.append(pred_str)
+            references.append(ref_str)
+
+            if len(examples) < max_examples:
+                prefix_tokens = [itos[i] for i in prefix]
+                prefix_str = " ".join(prefix_tokens)
+                examples.append((prefix_str, ref_str, pred_str))
 
     if not predictions:
         raise ValueError(
@@ -168,7 +178,7 @@ def evaluate_model_rouge(
             "Возможно, все предложения слишком короткие."
         )
 
-    return compute_rouge(predictions, references)
+    return compute_rouge(predictions, references), examples
 
 
 def train_lstm_model(
@@ -206,6 +216,8 @@ def train_lstm_model(
     print(f"Используемое устройство: {device}")
     print(f"Размер словаря: {vocab_size}")
 
+    last_examples: List[Tuple[str, str, str]] = []
+
     for epoch in range(1, num_epochs + 1):
         model.train()
         running_loss = 0.0
@@ -235,7 +247,7 @@ def train_lstm_model(
 
         # Оценка ROUGE на валидационных предложениях
         val_sentences = read_tokens_file(val_path)
-        rouge_scores = evaluate_model_rouge(
+        rouge_scores, examples = evaluate_model_rouge(
             model=model,
             tokenized_sentences=val_sentences,
             stoi=stoi,
@@ -243,6 +255,7 @@ def train_lstm_model(
             device=device,
             context_size=context_size,
         )
+        last_examples = examples
 
         print(
             f"Эпоха {epoch}/{num_epochs} | "
@@ -251,6 +264,16 @@ def train_lstm_model(
             f"ROUGE-2: {rouge_scores['rouge2']:.4f} | "
             f"ROUGE-L: {rouge_scores['rougeL']:.4f}"
         )
+
+    # Примеры предсказаний LSTM на валидационной выборке
+    if last_examples:
+        print("\nПримеры предсказаний LSTM на валидационной выборке:")
+        for i, (prefix_str, true_suffix, pred_suffix) in enumerate(last_examples, start=1):
+            print(f"=== Пример {i} ===")
+            print(f"Префикс (3/4): {prefix_str}")
+            print(f"Истинное продолжение (1/4): {true_suffix}")
+            print(f"Предсказанное продолжение:   {pred_suffix}")
+            print()
 
     # Сохраняем обученную модель на диск
     model_dir = os.path.dirname(model_path)
