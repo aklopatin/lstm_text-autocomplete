@@ -32,9 +32,10 @@ def read_tokens_file(path: str) -> List[List[str]]:
 def create_dataloaders(
     train_path: str = "./data/train_tokens.txt",
     val_path: str = "./data/val_tokens.txt",
+    test_path: str = "./data/test_tokens.txt",
     context_size: int = 5,
     batch_size: int = 256,
-) -> Tuple[DataLoader, DataLoader, int, Dict[str, int], List[str]]:
+) -> Tuple[DataLoader, DataLoader, DataLoader, int, Dict[str, int], List[str]]:
     """
     Создаёт DataLoader для обучающей и валидационной выборок.
 
@@ -43,19 +44,22 @@ def create_dataloaders(
     # Загружаем токенизированные предложения
     train_sentences = read_tokens_file(train_path)
     val_sentences = read_tokens_file(val_path)
+    test_sentences = read_tokens_file(test_path)
 
     # Строим словарь по train + val (можно оставить только train, по задаче)
-    all_sentences = train_sentences + val_sentences
+    all_sentences = train_sentences + val_sentences + test_sentences
     stoi, itos = build_vocab(all_sentences)
     vocab_size = len(itos)
 
     # Преобразуем токены в индексы
     train_indexed = sentences_to_indices(train_sentences, stoi)
     val_indexed = sentences_to_indices(val_sentences, stoi)
+    test_indexed = sentences_to_indices(test_sentences, stoi)
 
     # Создаём датасеты
     train_dataset = NextTokenDataset(train_indexed, context_size=context_size)
     val_dataset = NextTokenDataset(val_indexed, context_size=context_size)
+    test_dataset = NextTokenDataset(test_indexed, context_size=context_size)
 
     # И соответствующие DataLoader'ы
     train_loader = DataLoader(
@@ -69,7 +73,13 @@ def create_dataloaders(
         shuffle=False,
     )
 
-    return train_loader, val_loader, vocab_size, stoi, itos
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+    )
+
+    return train_loader, val_loader, test_loader, vocab_size, stoi, itos
 
 
 class SentenceDataset(Dataset):
@@ -104,7 +114,6 @@ def evaluate_model_rouge(
     модель генерирует оставшуюся часть, и мы сравниваем её с истинными
     последними 1/4 токенов.
     """
-    vocab_size = len(itos)
     pad_idx = stoi.get("<pad>", 0)
 
     indexed_sentences = sentences_to_indices(tokenized_sentences, stoi)
@@ -135,28 +144,13 @@ def evaluate_model_rouge(
 
             steps = len(target_suffix) if max_new_tokens is None else max_new_tokens
 
-            generated_suffix: List[int] = []
-            cur_sequence = prefix.copy()
-
-            for _ in range(steps):
-                cur_context = cur_sequence[-context_size:]
-                if len(cur_context) < context_size:
-                    cur_context = [pad_idx] * (context_size - len(cur_context)) + cur_context
-
-                context_tensor = torch.tensor(
-                    cur_context, dtype=torch.long, device=device
-                ).unsqueeze(0)  # (1, context_size)
-
-                # one-hot кодировка токенов
-                context_one_hot = F.one_hot(
-                    context_tensor, num_classes=vocab_size
-                ).float()  # (1, context_size, vocab_size)
-
-                logits = model(context_one_hot)  # (1, vocab_size)
-                next_idx = int(torch.argmax(logits, dim=-1).item())
-
-                generated_suffix.append(next_idx)
-                cur_sequence.append(next_idx)
+            generated_suffix = model.generate(
+                context_indices=prefix,
+                context_size=context_size,
+                max_new_tokens=steps,
+                pad_idx=pad_idx,
+                device=device,
+            )
 
             pred_tokens = [itos[i] for i in generated_suffix]
             ref_tokens = [itos[i] for i in target_suffix]
@@ -184,6 +178,7 @@ def evaluate_model_rouge(
 def train_lstm_model(
     train_path: str = "./data/train_tokens.txt",
     val_path: str = "./data/val_tokens.txt",
+    test_path: str = "./data/test_tokens.txt",
     context_size: int = 5,
     batch_size: int = 256,
     hidden_dim: int = 16,
@@ -197,9 +192,10 @@ def train_lstm_model(
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_loader, val_loader, vocab_size, stoi, itos = create_dataloaders(
+    train_loader, val_loader, test_loader, vocab_size, stoi, itos = create_dataloaders(
         train_path=train_path,
         val_path=val_path,
+        test_path=test_path,
         context_size=context_size,
         batch_size=batch_size,
     )
@@ -222,7 +218,7 @@ def train_lstm_model(
         model.train()
         running_loss = 0.0
         num_samples = 0
-
+        print(f"Эпоха: {epoch}")
         for contexts, targets in train_loader:
             contexts = contexts.to(device)  # (batch, context_size)
             targets = targets.to(device)    # (batch,)
@@ -257,12 +253,27 @@ def train_lstm_model(
         )
         last_examples = examples
 
+        # Оценка ROUGE на тестовых предложениях
+        test_sentences = read_tokens_file(test_path)
+        test_rouge_scores, _ = evaluate_model_rouge(
+            model=model,
+            tokenized_sentences=test_sentences,
+            stoi=stoi,
+            itos=itos,
+            device=device,
+            context_size=context_size,
+            max_examples=0,
+        )
+
         print(
             f"Эпоха {epoch}/{num_epochs} | "
             f"train loss: {avg_loss:.4f} | "
             f"ROUGE-1: {rouge_scores['rouge1']:.4f} | "
             f"ROUGE-2: {rouge_scores['rouge2']:.4f} | "
-            f"ROUGE-L: {rouge_scores['rougeL']:.4f}"
+            f"ROUGE-L: {rouge_scores['rougeL']:.4f} | "
+            f"Test ROUGE-1: {test_rouge_scores['rouge1']:.4f} | "
+            f"Test ROUGE-2: {test_rouge_scores['rouge2']:.4f} | "
+            f"Test ROUGE-L: {test_rouge_scores['rougeL']:.4f}"
         )
 
     # Примеры предсказаний LSTM на валидационной выборке
