@@ -9,10 +9,6 @@ from lstm_model import NNAutocomplete
 
 
 def read_tokenized_sentences(path: str) -> List[List[str]]:
-    """
-    Читает файл с токенами (одна строка — одно предложение, токены разделены пробелами)
-    и возвращает список токенов.
-    """
     sentences: List[List[str]] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -23,17 +19,11 @@ def read_tokenized_sentences(path: str) -> List[List[str]]:
 
 
 def split_prefix_suffix_tokens(tokens: List[str]) -> Tuple[List[str], List[str]] | None:
-    """
-    Делит предложение на первые 3/4 токенов (префикс) и последние 1/4 (суффикс).
-    Возвращает (prefix_tokens, suffix_tokens) или None, если предложение слишком короткое.
-    """
     if len(tokens) < 4:
         return None
-
     split_idx = max(1, int(len(tokens) * 3 / 4))
     if split_idx >= len(tokens):
         return None
-
     prefix_tokens = tokens[:split_idx]
     suffix_tokens = tokens[split_idx:]
     return prefix_tokens, suffix_tokens
@@ -48,7 +38,6 @@ def load_lstm_checkpoint(
     hidden_dim = int(checkpoint["hidden_dim"])
     context_size = int(checkpoint["context_size"])
     embed_dim = int(checkpoint.get("embed_dim", hidden_dim))
-
     model = NNAutocomplete(
         vocab_size=vocab_size,
         embed_dim=embed_dim,
@@ -57,7 +46,6 @@ def load_lstm_checkpoint(
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
-
     return model, checkpoint["stoi"], checkpoint["itos"], context_size
 
 
@@ -77,13 +65,11 @@ def generate_distil_prediction(
         no_repeat_ngram_size=3,
         pad_token_id=tokenizer.eos_token_id,
     )
-
     full_text = outputs[0]["generated_text"]
     if full_text.startswith(prefix_text):
         completion = full_text[len(prefix_text) :].strip()
     else:
         completion = full_text.strip()
-
     completion_tokens = completion.split()
     completion_tokens = completion_tokens[:target_len]
     return " ".join(completion_tokens)
@@ -102,7 +88,6 @@ def generate_lstm_prediction(
     if unk_idx is None:
         raise ValueError("В словаре отсутствует токен <unk>.")
     pad_idx = stoi.get("<pad>", 0)
-
     prefix_indices = [stoi.get(tok, unk_idx) for tok in prefix_tokens]
     generated_indices = model.generate(
         context_indices=prefix_indices,
@@ -122,33 +107,23 @@ def compare_distil_lstm_predictions(
     num_examples: int = 20,
     max_new_tokens_factor: float = 1.0,
 ) -> None:
-    """
-    Сравнивает предсказания distilgpt2 и LSTM на одинаковых выражениях.
-    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device_idx = 0 if torch.cuda.is_available() else -1
-
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name)
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.eos_token_id
-    # Убираем temperature из generation_config, чтобы не было предупреждений
     model.generation_config.temperature = None
-
     text_gen = pipeline(
         "text-generation",
         model=model,
         tokenizer=tokenizer,
         device=device_idx,
     )
-
     lstm_model, stoi, itos, context_size = load_lstm_checkpoint(model_path, device)
-
     sentences = read_tokenized_sentences(val_path)
     examples: List[Tuple[str, str, str, str]] = []
-
     for tokens in sentences:
         split = split_prefix_suffix_tokens(tokens)
         if split is None:
@@ -156,11 +131,9 @@ def compare_distil_lstm_predictions(
         prefix_tokens, suffix_tokens = split
         if not suffix_tokens:
             continue
-
         prefix_text = " ".join(prefix_tokens)
         suffix_text = " ".join(suffix_tokens)
         target_len = len(suffix_tokens)
-
         distil_pred = generate_distil_prediction(
             prefix_text=prefix_text,
             target_len=target_len,
@@ -168,7 +141,6 @@ def compare_distil_lstm_predictions(
             tokenizer=tokenizer,
             max_new_tokens_factor=max_new_tokens_factor,
         )
-
         lstm_pred = generate_lstm_prediction(
             prefix_tokens=prefix_tokens,
             target_len=target_len,
@@ -178,17 +150,14 @@ def compare_distil_lstm_predictions(
             context_size=context_size,
             device=device,
         )
-
         examples.append((prefix_text, suffix_text, distil_pred, lstm_pred))
         if len(examples) >= num_examples:
             break
-
     if not examples:
         raise ValueError(
             "Не удалось получить ни одного примера для сравнения. "
             "Проверьте валидационный файл и модель LSTM."
         )
-
     print(
         f"Сравнение предсказаний distilgpt2 и LSTM "
         f"на {len(examples)} одинаковых выражениях:"
