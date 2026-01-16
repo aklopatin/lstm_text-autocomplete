@@ -44,35 +44,22 @@ def split_prefix_suffix(text: str) -> Tuple[str, str] | None:
 
 
 def evaluate_distilgpt2_on_val(
-    val_path: str = "./data/val_tokens.txt",
+    val_path: str = "./data/test_tokens.txt",
     model_name: str = "distilgpt2",
-    max_samples: int | None = 200,
+    max_samples: int | None = 1000,
     max_new_tokens_factor: float = 1.0,
 ) -> None:
-    """
-    Оценивает качество distilgpt2 на валидационной выборке по ROUGE.
 
-    Для каждого предложения:
-      - берём первые 3/4 слов как вход (промпт),
-      - модель генерирует продолжение,
-      - сравниваем с истинной последней 1/4 предложения.
-
-    :param val_path: путь к файлу с валидационными предложениями
-    :param model_name: имя модели в Transformers (по умолчанию distilgpt2)
-    :param max_samples: максимальное количество примеров из валидации
-        (None — использовать все)
-    :param max_new_tokens_factor: во сколько раз максимум генерируемых токенов
-        превышает длину истинного суффикса (1.0 — ровно столько же)
-    """
     device_idx = 0 if torch.cuda.is_available() else -1
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name)
 
-    # У GPT‑2 по умолчанию нет pad_token, поэтому используем eos_token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = tokenizer.eos_token_id
+    # Убираем temperature из generation_config, чтобы не было предупреждений
+    model.generation_config.temperature = None
 
     text_gen = pipeline(
         "text-generation",
@@ -99,26 +86,22 @@ def evaluate_distilgpt2_on_val(
         target_len = len(suffix_tokens)
         max_new_tokens = max(1, int(target_len * max_new_tokens_factor))
 
-        # Генерация продолжения
         outputs = text_gen(
             prefix,
             max_new_tokens=max_new_tokens,
-            do_sample=False,          # жадная генерация для стабильности
-            num_beams=5,              # beam‑поиск
-            no_repeat_ngram_size=3,   # избегаем повторов
+            do_sample=False,         
+            num_beams=5,              
+            no_repeat_ngram_size=3,  
             pad_token_id=tokenizer.eos_token_id,
         )
 
         full_text = outputs[0]["generated_text"]
 
-        # Отделяем только сгенерированное продолжение
         if full_text.startswith(prefix):
             completion = full_text[len(prefix):].strip()
         else:
-            # На случай, если модель слегка изменила начало
             completion = full_text.strip()
 
-        # Ограничиваем длину продолжения длиной истинного суффикса
         completion_tokens = completion.split()
         completion_tokens = completion_tokens[:target_len]
         completion_trimmed = " ".join(completion_tokens)
@@ -135,13 +118,19 @@ def evaluate_distilgpt2_on_val(
             "Проверьте содержимое валидационного файла и длину предложений."
         )
 
-    rouge_scores = compute_rouge(predictions, references)
 
-    print(f"Оценка модели {model_name} на валидационной выборке ({len(predictions)} примеров):")
+    max_rouge_samples = 1000
+    predictions_for_rouge = predictions[:max_rouge_samples]
+    references_for_rouge = references[:max_rouge_samples]
+
+    rouge_scores = compute_rouge(predictions_for_rouge, references_for_rouge)
+
+    print(f"Оценка модели {model_name} на тестовой выборке:")
+    print(f"Всего сгенерировано: {len(predictions)} примеров")
+    print(f"Оценка ROUGE выполнена на: {len(predictions_for_rouge)} примерах")
     print(
         f"ROUGE-1: {rouge_scores['rouge1']:.4f} | "
-        f"ROUGE-2: {rouge_scores['rouge2']:.4f} | "
-        f"ROUGE-L: {rouge_scores['rougeL']:.4f}"
+        f"ROUGE-2: {rouge_scores['rouge2']:.4f}"
     )
 
     print("\nПримеры предсказаний:\n")

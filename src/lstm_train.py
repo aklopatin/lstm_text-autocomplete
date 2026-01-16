@@ -3,7 +3,6 @@ import os
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from next_token_dataset import (
@@ -33,7 +32,7 @@ def create_dataloaders(
     train_path: str = "./data/train_tokens.txt",
     val_path: str = "./data/val_tokens.txt",
     test_path: str = "./data/test_tokens.txt",
-    context_size: int = 5,
+    context_size: int = 15,
     batch_size: int = 256,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int, Dict[str, int], List[str]]:
     """
@@ -103,9 +102,10 @@ def evaluate_model_rouge(
     stoi: Dict[str, int],
     itos: List[str],
     device: torch.device,
-    context_size: int = 5,
+    context_size: int = 15,
     max_new_tokens: int | None = None,
     max_examples: int = 5,
+    max_samples: int = 1000,
 ) -> Tuple[Dict[str, float], List[Tuple[str, str, str]]]:
     """
     Оценивает модель с помощью ROUGE на списке предложений.
@@ -113,8 +113,13 @@ def evaluate_model_rouge(
     Для каждого предложения берём первые 3/4 токенов как вход (префикс),
     модель генерирует оставшуюся часть, и мы сравниваем её с истинными
     последними 1/4 токенов.
+
+    max_samples: сколько предложений брать для оценки (фиксированное подмножество).
     """
     pad_idx = stoi.get("<pad>", 0)
+
+    if max_samples > 0:
+        tokenized_sentences = tokenized_sentences[:max_samples]
 
     indexed_sentences = sentences_to_indices(tokenized_sentences, stoi)
     dataset = SentenceDataset(indexed_sentences)
@@ -172,17 +177,23 @@ def evaluate_model_rouge(
             "Возможно, все предложения слишком короткие."
         )
 
-    return compute_rouge(predictions, references), examples
+    rouge_scores = compute_rouge(predictions, references)
+    # Оставляем только нужные метрики
+    return {
+        "rouge1": rouge_scores["rouge1"],
+        "rouge2": rouge_scores["rouge2"],
+    }, examples
 
 
 def train_lstm_model(
     train_path: str = "./data/train_tokens.txt",
     val_path: str = "./data/val_tokens.txt",
     test_path: str = "./data/test_tokens.txt",
-    context_size: int = 5,
+    context_size: int = 15,
     batch_size: int = 256,
-    hidden_dim: int = 16,
-    num_epochs: int = 5,
+    hidden_dim: int = 256,
+    embed_dim: int | None = None,
+    num_epochs: int = 10,
     lr: float = 1e-3,
     model_path: str = "./models/lstm_autocomplete.pt",
 ) -> None:
@@ -200,8 +211,12 @@ def train_lstm_model(
         batch_size=batch_size,
     )
 
+    if embed_dim is None:
+        embed_dim = hidden_dim
+
     model = NNAutocomplete(
-        input_dim=vocab_size,
+        vocab_size=vocab_size,
+        embed_dim=embed_dim,
         hidden_dim=hidden_dim,
         output_dim=vocab_size,
     ).to(device)
@@ -223,12 +238,7 @@ def train_lstm_model(
             contexts = contexts.to(device)  # (batch, context_size)
             targets = targets.to(device)    # (batch,)
 
-            # Переводим индексы токенов в one‑hot представление
-            inputs_one_hot = F.one_hot(
-                contexts, num_classes=vocab_size
-            ).float()  # (batch, context_size, vocab_size)
-
-            logits = model(inputs_one_hot)  # (batch, vocab_size)
+            logits = model(contexts)  # (batch, vocab_size)
             loss = criterion(logits, targets)
 
             optimizer.zero_grad()
@@ -241,44 +251,31 @@ def train_lstm_model(
 
         avg_loss = running_loss / max(1, num_samples)
 
-        # Оценка ROUGE на валидационных предложениях
-        val_sentences = read_tokens_file(val_path)
-        rouge_scores, examples = evaluate_model_rouge(
-            model=model,
-            tokenized_sentences=val_sentences,
-            stoi=stoi,
-            itos=itos,
-            device=device,
-            context_size=context_size,
-        )
-        last_examples = examples
-
         # Оценка ROUGE на тестовых предложениях
         test_sentences = read_tokens_file(test_path)
-        test_rouge_scores, _ = evaluate_model_rouge(
+        test_max_samples = 1000
+        print(f"ROUGE считаем на фиксированных {test_max_samples} примерах теста.")
+        test_rouge_scores, examples = evaluate_model_rouge(
             model=model,
             tokenized_sentences=test_sentences,
             stoi=stoi,
             itos=itos,
             device=device,
             context_size=context_size,
-            max_examples=0,
+            max_samples=test_max_samples,
         )
+        last_examples = examples
 
         print(
             f"Эпоха {epoch}/{num_epochs} | "
             f"train loss: {avg_loss:.4f} | "
-            f"ROUGE-1: {rouge_scores['rouge1']:.4f} | "
-            f"ROUGE-2: {rouge_scores['rouge2']:.4f} | "
-            f"ROUGE-L: {rouge_scores['rougeL']:.4f} | "
             f"Test ROUGE-1: {test_rouge_scores['rouge1']:.4f} | "
-            f"Test ROUGE-2: {test_rouge_scores['rouge2']:.4f} | "
-            f"Test ROUGE-L: {test_rouge_scores['rougeL']:.4f}"
+            f"Test ROUGE-2: {test_rouge_scores['rouge2']:.4f}"
         )
 
-    # Примеры предсказаний LSTM на валидационной выборке
+    # Примеры предсказаний LSTM на тестовой выборке
     if last_examples:
-        print("\nПримеры предсказаний LSTM на валидационной выборке:")
+        print("\nПримеры предсказаний LSTM на тестовой выборке:")
         for i, (prefix_str, true_suffix, pred_suffix) in enumerate(last_examples, start=1):
             print(f"=== Пример {i} ===")
             print(f"Префикс (3/4): {prefix_str}")
@@ -298,6 +295,7 @@ def train_lstm_model(
             "itos": itos,
             "context_size": context_size,
             "hidden_dim": hidden_dim,
+            "embed_dim": embed_dim,
         },
         model_path,
     )

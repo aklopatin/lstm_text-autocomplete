@@ -16,7 +16,7 @@ class NextTokenDataset(Dataset):
     def __init__(
         self,
         indexed_sentences: List[List[int]],
-        context_size: int = 5,
+        context_size: int = 15,
     ) -> None:
         """
         :param indexed_sentences: список предложений, где каждое предложение —
@@ -58,7 +58,7 @@ class NextTokenDataset(Dataset):
 
 def build_vocab(
     tokenized_sentences: List[List[str]],
-    min_freq: int = 1,
+    min_freq: int = 5,
     pad_token: str = "<pad>",
     unk_token: str = "<unk>",
 ) -> Tuple[Dict[str, int], List[str]]:

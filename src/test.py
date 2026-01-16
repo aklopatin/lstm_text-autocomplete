@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 from lstm_model import NNAutocomplete
 
@@ -19,9 +18,11 @@ def load_trained_model(
     itos: list[str] = checkpoint["itos"]
     context_size: int = checkpoint["context_size"]
     hidden_dim: int = checkpoint["hidden_dim"]
+    embed_dim: int = checkpoint.get("embed_dim", hidden_dim)
 
     model = NNAutocomplete(
-        input_dim=vocab_size,
+        vocab_size=vocab_size,
+        embed_dim=embed_dim,
         hidden_dim=hidden_dim,
         output_dim=vocab_size,
     ).to(device)
@@ -57,7 +58,6 @@ def generate_completion(
     # Преобразуем токены в индексы
     sequence = [stoi.get(tok, unk_idx) for tok in tokens]
 
-    vocab_size = len(itos)
     generated_indices: list[int] = []
 
     with torch.no_grad():
@@ -70,11 +70,7 @@ def generate_completion(
                 cur_context, dtype=torch.long, device=device
             ).unsqueeze(0)  # (1, context_size)
 
-            context_one_hot = F.one_hot(
-                context_tensor, num_classes=vocab_size
-            ).float()  # (1, context_size, vocab_size)
-
-            logits = model(context_one_hot)  # (1, vocab_size)
+            logits = model(context_tensor)  # (1, vocab_size)
             next_idx = int(torch.argmax(logits, dim=-1).item())
 
             # Останов по <pad>, чтобы не плодить бессмысленные токены

@@ -1,31 +1,37 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class NNAutocomplete(nn.Module):
     """
     Простейшая LSTM‑модель для автодополнения текста.
 
-    Ожидается, что на вход подаются one‑hot представления токенов
-    размерности (batch_size, seq_len, input_dim), где input_dim == vocab_size.
+    Ожидается, что на вход подаются индексы токенов размерности
+    (batch_size, seq_len).
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None:
+    def __init__(
+        self,
+        vocab_size: int,
+        embed_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        pad_idx: int = 0,
+    ) -> None:
         super().__init__()
-        self.vocab_size = input_dim
-        # LSTM по последовательности контекста
-        self.rnn = nn.LSTM(input_dim, hidden_dim, batch_first=True)
-        # Линейный слой проецирует последнее скрытое состояние в логиты по словарю
+        self.vocab_size = vocab_size
+        self.embed = nn.Embedding(vocab_size, embed_dim, padding_idx=pad_idx)
+        self.rnn = nn.LSTM(embed_dim, hidden_dim, num_layers=2, batch_first=True)
         self.fc = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        :param x: тензор формы (batch_size, seq_len, input_dim)
+        :param x: тензор формы (batch_size, seq_len) с индексами токенов
         :return: логиты для следующего токена формы (batch_size, output_dim)
         """
+        embeddings = self.embed(x)  # (batch_size, seq_len, embed_dim)
         # output: (batch_size, seq_len, hidden_dim)
-        output, _ = self.rnn(x)
+        output, _ = self.rnn(embeddings)
         # Берём представление последнего токена в последовательности
         last_hidden = output[:, -1, :]  # (batch_size, hidden_dim)
         logits = self.fc(last_hidden)   # (batch_size, output_dim)
@@ -63,11 +69,7 @@ class NNAutocomplete(nn.Module):
                     cur_context, dtype=torch.long, device=device
                 ).unsqueeze(0)  # (1, context_size)
 
-                context_one_hot = F.one_hot(
-                    context_tensor, num_classes=self.vocab_size
-                ).float()  # (1, context_size, vocab_size)
-
-                logits = self.forward(context_one_hot)  # (1, vocab_size)
+                logits = self.forward(context_tensor)  # (1, vocab_size)
                 next_idx = int(torch.argmax(logits, dim=-1).item())
 
                 generated_indices.append(next_idx)
