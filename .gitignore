@@ -1,3 +1,7 @@
 .vscode
 env/
 env
+
+data/test_tokens.txt
+data/train_tokens.txt
+data/val_tokens.txt
