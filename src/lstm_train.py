@@ -158,7 +158,7 @@ def train_lstm_model(
     )
     if embed_dim is None:
         embed_dim = hidden_dim
-    model = NNAutocomplete(
+    model: NNAutocomplete = NNAutocomplete(
         vocab_size=vocab_size,
         embed_dim=embed_dim,
         hidden_dim=hidden_dim,
